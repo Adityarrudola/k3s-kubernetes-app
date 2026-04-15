@@ -16,6 +16,6 @@ spec:
         - name: sample-app
           image: onpremcicdacr.azurecr.io/sample-app:latest
           ports:
-            - containerPort: 5000
+            - containerPort: 80
       imagePullSecrets:
         - name: acr-secret
