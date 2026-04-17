@@ -9,3 +9,5 @@ def call() {
         BUILD_DIR: "/tmp/build-${env.BUILD_NUMBER}"
     ]
 }
+
+return this
