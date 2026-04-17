@@ -50,15 +50,18 @@ pipeline {
                 }
             }
         }
+
+        stage('Cleanup') {
+            steps {
+                script {
+                    def cleanupFn = load "jenkins/functions/cleanup.groovy"
+                    cleanupFn(cfg)
+                }
+            }
+        }
     }
 
     post {
-        always {
-            script {
-                sh "rm -rf ${cfg?.BUILD_DIR} || true"
-            }
-        }
-
         success {
             emailext(
                 subject: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
