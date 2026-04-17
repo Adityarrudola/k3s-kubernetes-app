@@ -12,10 +12,7 @@ pipeline {
         IMAGE_TAG = "${BUILD_NUMBER}"
         FULL_IMAGE = "${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}"
 
-        K8S_MANIFEST_REPO = "https://github.com/Adityarrudola/k3s-kubernetes-manifests.git"
-
         KUBECONFIG = "/var/jenkins_home/.kube/config"
-
         BUILD_DIR = "/tmp/build-${BUILD_NUMBER}"
     }
 
@@ -31,15 +28,7 @@ pipeline {
             steps {
                 sh '''
                 mkdir -p ${BUILD_DIR}
-                '''
-            }
-        }
-
-        stage('Clone App Repo') {
-            steps {
-                sh '''
-                cd ${BUILD_DIR}
-                git clone --depth 1 https://github.com/Adityarrudola/k3s-app-repo.git app
+                cp -r * ${BUILD_DIR}/
                 '''
             }
         }
@@ -89,19 +78,10 @@ pipeline {
             }
         }
 
-        stage('Clone K8s Manifests Repo') {
-            steps {
-                sh '''
-                cd ${BUILD_DIR}
-                git clone --depth 1 ${K8S_MANIFEST_REPO} manifests
-                '''
-            }
-        }
-
         stage('Update Image Tag in Manifest') {
             steps {
                 sh '''
-                cd ${BUILD_DIR}/manifests
+                cd ${BUILD_DIR}
 
                 sed -i "s|image: .*|image: ${FULL_IMAGE}|g" k8s/deployment.yaml
                 '''
@@ -113,7 +93,7 @@ pipeline {
                 sh '''
                 export KUBECONFIG=${KUBECONFIG}
 
-                kubectl apply -f ${BUILD_DIR}/manifests/k8s/
+                kubectl apply -f ${BUILD_DIR}/k8s/
                 '''
             }
         }
@@ -123,7 +103,7 @@ pipeline {
                 sh '''
                 export KUBECONFIG=${KUBECONFIG}
 
-                kubectl rollout status deployment/sample-app --timeout=120s
+                kubectl rollout status deployment/${IMAGE_NAME} --timeout=120s
                 kubectl get pods -o wide
                 '''
             }
@@ -134,17 +114,13 @@ pipeline {
                 sh '''
                 echo "Cleaning Docker inside dind..."
         
-                # Remove old images except current + latest
                 docker images --format "{{.Repository}}:{{.Tag}}" \
-                | grep onpremcicdacr.azurecr.io/sample-app \
+                | grep ${ACR_LOGIN_SERVER}/${IMAGE_NAME} \
                 | grep -v "${IMAGE_TAG}" \
                 | grep -v "latest" \
                 | xargs -r docker rmi -f || true
         
-                # Remove build cache
                 docker builder prune -af || true
-        
-                # Aggressive cleanup
                 docker system prune -af --volumes || true
                 '''
             }
@@ -163,7 +139,6 @@ pipeline {
     post {
         always {
             sh '''
-            # Safety cleanup (even if pipeline fails)
             rm -rf ${BUILD_DIR} || true
             '''
         }
@@ -186,7 +161,7 @@ pipeline {
             emailext(
                 subject: "FAILURE: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
                 body: """
-                    <h2 style="color:red;">Deployment FAILED/h2>
+                    <h2 style="color:red;">Deployment FAILED</h2>
                     <p><b>Check Logs:</b> ${env.BUILD_URL}</p>
                 """,
                 mimeType: 'text/html',
