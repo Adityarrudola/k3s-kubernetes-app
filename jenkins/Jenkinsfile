@@ -1,3 +1,5 @@
+def cfg
+
 pipeline {
     agent any
 
@@ -16,8 +18,8 @@ pipeline {
         stage('Load Config') {
             steps {
                 script {
-                    cfgLoader = load "jenkins/functions/config.groovy"
-                    cfg = cfgLoader()
+                    def cfgLoader = load "jenkins/functions/config.groovy"
+                    cfg = cfgLoader() 
                 }
             }
         }
@@ -25,7 +27,7 @@ pipeline {
         stage('Build Image') {
             steps {
                 script {
-                    buildFn = load "jenkins/functions/build.groovy"
+                    def buildFn = load "jenkins/functions/build.groovy"
                     buildFn(cfg)
                 }
             }
@@ -34,7 +36,7 @@ pipeline {
         stage('Login & Push Image') {
             steps {
                 script {
-                    dockerFn = load "jenkins/functions/docker.groovy"
+                    def dockerFn = load "jenkins/functions/docker.groovy"
                     dockerFn(cfg)
                 }
             }
@@ -43,7 +45,7 @@ pipeline {
         stage('Deploy to k3s') {
             steps {
                 script {
-                    deployFn = load "jenkins/functions/deploy.groovy"
+                    def deployFn = load "jenkins/functions/deploy.groovy"
                     deployFn(cfg)
                 }
             }
