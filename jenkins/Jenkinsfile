@@ -1,0 +1,197 @@
+pipeline {
+    agent any
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+    }
+
+    environment {
+        ACR_NAME = "onpremcicdacr"
+        ACR_LOGIN_SERVER = "onpremcicdacr.azurecr.io"
+        IMAGE_NAME = "sample-app"
+        IMAGE_TAG = "${BUILD_NUMBER}"
+        FULL_IMAGE = "${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+        K8S_MANIFEST_REPO = "https://github.com/Adityarrudola/k3s-kubernetes-manifests.git"
+
+        KUBECONFIG = "/var/jenkins_home/.kube/config"
+
+        BUILD_DIR = "/tmp/build-${BUILD_NUMBER}"
+    }
+
+    stages {
+
+        stage('Approve Build') {
+            steps {
+                input message: 'Proceed with build & deploy?', ok: 'Yes'
+            }
+        }
+
+        stage('Setup Build Directory') {
+            steps {
+                sh '''
+                mkdir -p ${BUILD_DIR}
+                '''
+            }
+        }
+
+        stage('Clone App Repo') {
+            steps {
+                sh '''
+                cd ${BUILD_DIR}
+                git clone --depth 1 https://github.com/Adityarrudola/k3s-app-repo.git app
+                '''
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh '''
+                cd ${BUILD_DIR}/app
+
+                docker build \
+                  -t ${FULL_IMAGE} \
+                  -t ${ACR_LOGIN_SERVER}/${IMAGE_NAME}:latest \
+                  .
+                '''
+            }
+        }
+
+        stage('Login to ACR') {
+            steps {
+                withCredentials([azureServicePrincipal(
+                    credentialsId: 'azure-sp',
+                    subscriptionIdVariable: 'AZ_SUB',
+                    clientIdVariable: 'AZ_CLIENT',
+                    clientSecretVariable: 'AZ_SECRET',
+                    tenantIdVariable: 'AZ_TENANT'
+                )]) {
+                    sh '''
+                    az login --service-principal \
+                      -u $AZ_CLIENT \
+                      -p $AZ_SECRET \
+                      --tenant $AZ_TENANT
+
+                    az account set --subscription $AZ_SUB
+
+                    az acr login --name $ACR_NAME
+                    '''
+                }
+            }
+        }
+
+        stage('Push Image to ACR') {
+            steps {
+                sh '''
+                docker push ${FULL_IMAGE}
+                docker push ${ACR_LOGIN_SERVER}/${IMAGE_NAME}:latest
+                '''
+            }
+        }
+
+        stage('Clone K8s Manifests Repo') {
+            steps {
+                sh '''
+                cd ${BUILD_DIR}
+                git clone --depth 1 ${K8S_MANIFEST_REPO} manifests
+                '''
+            }
+        }
+
+        stage('Update Image Tag in Manifest') {
+            steps {
+                sh '''
+                cd ${BUILD_DIR}/manifests
+
+                sed -i "s|image: .*|image: ${FULL_IMAGE}|g" k8s/deployment.yaml
+                '''
+            }
+        }
+
+        stage('Deploy to k3s') {
+            steps {
+                sh '''
+                export KUBECONFIG=${KUBECONFIG}
+
+                kubectl apply -f ${BUILD_DIR}/manifests/k8s/
+                '''
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                sh '''
+                export KUBECONFIG=${KUBECONFIG}
+
+                kubectl rollout status deployment/sample-app --timeout=120s
+                kubectl get pods -o wide
+                '''
+            }
+        }
+
+        stage('Docker Cleanup') {
+            steps {
+                sh '''
+                echo "Cleaning Docker inside dind..."
+        
+                # Remove old images except current + latest
+                docker images --format "{{.Repository}}:{{.Tag}}" \
+                | grep onpremcicdacr.azurecr.io/sample-app \
+                | grep -v "${IMAGE_TAG}" \
+                | grep -v "latest" \
+                | xargs -r docker rmi -f || true
+        
+                # Remove build cache
+                docker builder prune -af || true
+        
+                # Aggressive cleanup
+                docker system prune -af --volumes || true
+                '''
+            }
+        }
+
+        stage('Cleanup Workspace') {
+            steps {
+                sh '''
+                echo "Cleaning workspace..."
+                rm -rf ${BUILD_DIR} || true
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            sh '''
+            # Safety cleanup (even if pipeline fails)
+            rm -rf ${BUILD_DIR} || true
+            '''
+        }
+
+        success {
+            emailext(
+                subject: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                body: """
+                    <h2 style="color:green;">Deployment SUCCESS</h2>
+                    <p><b>Image:</b> ${FULL_IMAGE}</p>
+                    <p><b>Cluster:</b> k3s</p>
+                    <p><b>Build:</b> ${env.BUILD_URL}</p>
+                """,
+                mimeType: 'text/html',
+                to: 'aditya.rudola@quokkalabs.com'
+            )
+        }
+
+        failure {
+            emailext(
+                subject: "FAILURE: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                body: """
+                    <h2 style="color:red;">Deployment FAILED/h2>
+                    <p><b>Check Logs:</b> ${env.BUILD_URL}</p>
+                """,
+                mimeType: 'text/html',
+                to: 'aditya.rudola@quokkalabs.com'
+            )
+        }
+    }
+}
